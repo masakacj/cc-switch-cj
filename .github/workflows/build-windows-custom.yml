@@ -2,6 +2,9 @@ name: Build Windows Custom
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - main
@@ -61,6 +64,7 @@ jobs:
           git diff --check
 
       - name: Persist compatibility fix to fork
+        if: github.event_name != 'pull_request'
         shell: pwsh
         run: |
           $changes = git status --porcelain
