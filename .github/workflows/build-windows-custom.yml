@@ -1,0 +1,106 @@
+name: Build Windows Custom
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/build-windows-custom.yml'
+      - 'scripts/apply_vscode_redacted_thinking_fix.py'
+      - 'src-tauri/src/proxy/providers/reasoning_bridge.rs'
+      - 'src-tauri/src/proxy/providers/streaming_responses.rs'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'src-tauri/Cargo.toml'
+      - 'src-tauri/Cargo.lock'
+      - 'src-tauri/tauri.conf.json'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-custom-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows-x64:
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout latest fork main
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Setup pnpm
+        shell: pwsh
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.12.3 --activate
+          node --version
+          pnpm --version
+          rustc --version
+
+      - name: Apply VSCode redacted_thinking compatibility fix
+        shell: pwsh
+        run: |
+          python scripts/apply_vscode_redacted_thinking_fix.py
+          cargo fmt --manifest-path src-tauri/Cargo.toml
+          git diff --check
+
+      - name: Persist compatibility fix to fork
+        shell: pwsh
+        run: |
+          $changes = git status --porcelain
+          if (-not $changes) {
+            Write-Host 'Compatibility fix already exists in main.'
+            exit 0
+          }
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src-tauri/src/proxy/providers/reasoning_bridge.rs src-tauri/src/proxy/providers/streaming_responses.rs
+          git commit -m 'fix(proxy): avoid redacted thinking for VSCode Claude Code'
+          git push origin HEAD:main
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Windows x64 installers
+        shell: pwsh
+        run: |
+          # This fork does not have upstream's private updater signing key.
+          # Disable updater artifacts for this CI build; MSI/NSIS installers
+          # themselves remain normal Tauri Windows packages.
+          pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: List generated installers
+        shell: pwsh
+        run: |
+          Get-ChildItem src-tauri/target/release/bundle -Recurse -File |
+            Where-Object { $_.Extension -in '.exe', '.msi' } |
+            ForEach-Object {
+              $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+              Write-Host "$($_.FullName)  SHA256=$hash"
+            }
+
+      - name: Upload Windows x64 build
+        uses: actions/upload-artifact@v4
+        with:
+          name: CC-Switch-Windows-x64-custom
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/nsis/*.exe
