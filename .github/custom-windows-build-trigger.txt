@@ -1,0 +1,1 @@
+Trigger the custom Windows build workflow for the VSCode redacted_thinking compatibility fork.
