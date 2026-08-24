@@ -4341,18 +4341,30 @@ fn create_anthropic_sse_stream_from_responses_raw<E: std::error::Error + Send + 
                                                         serde_json::to_string(&signature_event).unwrap_or_default());
                                                     yield Ok(Bytes::from(signature_sse));
                                                 } else {
+                                                    // VS Code Claude Code cannot render redacted_thinking.
+                                                    // Start an empty thinking block and carry the opaque item
+                                                    // through the normal Anthropic signature delta instead.
                                                     let start_event = json!({
                                                         "type": "content_block_start",
                                                         "index": index,
-                                                        "content_block": {
-                                                            "type": "redacted_thinking",
-                                                            "data": envelope
-                                                        }
+                                                        "content_block": {"type": "thinking", "thinking": ""}
                                                     });
                                                     let start_sse = format!("event: content_block_start\ndata: {}\n\n",
                                                         serde_json::to_string(&start_event).unwrap_or_default());
                                                     yield Ok(Bytes::from(start_sse));
                                                     open_indices.insert(index);
+
+                                                    let signature_event = json!({
+                                                        "type": "content_block_delta",
+                                                        "index": index,
+                                                        "delta": {
+                                                            "type": "signature_delta",
+                                                            "signature": envelope
+                                                        }
+                                                    });
+                                                    let signature_sse = format!("event: content_block_delta\ndata: {}\n\n",
+                                                        serde_json::to_string(&signature_event).unwrap_or_default());
+                                                    yield Ok(Bytes::from(signature_sse));
                                                 }
                                             }
                                         }

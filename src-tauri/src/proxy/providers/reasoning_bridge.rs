@@ -58,12 +58,8 @@ pub(crate) fn anthropic_block_from_openai_reasoning_item(item: &Value) -> Option
 
     if has_encrypted_content {
         let envelope = encode_openai_reasoning_item(item)?;
-        if text.is_empty() {
-            return Some(json!({
-                "type": "redacted_thinking",
-                "data": envelope
-            }));
-        }
+        // Claude Code's VS Code extension does not render redacted_thinking.
+        // Preserve the opaque Responses reasoning item in signature instead.
         return Some(json!({
             "type": "thinking",
             "thinking": text,
@@ -114,15 +110,21 @@ mod tests {
     }
 
     #[test]
-    fn encrypted_item_without_summary_uses_redacted_thinking() {
+    fn encrypted_item_without_summary_uses_empty_thinking_signature() {
         let item = json!({
             "id": "rs_2",
             "type": "reasoning",
             "summary": [],
-            "encrypted_content": "opaque"
+            "encrypted_content": "opaque",
+            "future_field": {"preserved": true}
         });
         let block = anthropic_block_from_openai_reasoning_item(&item).unwrap();
-        assert_eq!(block["type"], "redacted_thinking");
+        assert_eq!(block["type"], "thinking");
+        assert_eq!(block["thinking"], "");
+        assert!(block.get("data").is_none());
+        assert!(block["signature"]
+            .as_str()
+            .is_some_and(|value| value.starts_with(OPENAI_REASONING_ITEM_PREFIX)));
         assert_eq!(
             openai_reasoning_item_from_anthropic_block(&block),
             Some(item)
