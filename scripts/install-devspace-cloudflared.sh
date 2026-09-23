@@ -103,7 +103,7 @@ install_node() {
   curl -fsSL "https://nodejs.org/dist/latest-v${NODE_MAJOR}.x/${archive}" -o "${tmpdir}/${archive}"
   printf '%s  %s\n' "${checksum}" "${tmpdir}/${archive}" | sha256sum -c - >/dev/null
 
-  version_dir="${archive%-linux-*}"
+  version_dir="${archive%.tar.xz}"
   mkdir -p /opt/nodejs
   rm -rf "/opt/nodejs/${version_dir}"
   tar -xJf "${tmpdir}/${archive}" -C /opt/nodejs
