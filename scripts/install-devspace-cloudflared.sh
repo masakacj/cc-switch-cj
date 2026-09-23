@@ -1,48 +1,40 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# One-click DevSpace + Cloudflare Tunnel installer.
+# One-click DevSpace installer.
+# Cloudflare Tunnel is NOT installed or modified by this script.
 # Supported: Debian/Ubuntu and Rocky/RHEL-like distributions using systemd.
 #
 # Interactive:
-#   curl -fsSL https://raw.githubusercontent.com/masakacj/cc-switch-cj/main/scripts/install-devspace-cloudflared.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/masakacj/cc-switch-cj/main/scripts/install-devspace-cloudflared.sh | bash
 #
 # Non-interactive:
-#   sudo env PUBLIC_URL=https://mcp.example.com \
-#     CF_TUNNEL_TOKEN='...' \
-#     ALLOWED_ROOTS='/home/devspace,/srv/projects' \
-#     bash install-devspace-cloudflared.sh
+#   PUBLIC_URL=https://mcp.example.com \
+#   ALLOWED_ROOTS='/home/devspace,/srv/projects' \
+#   bash install-devspace-cloudflared.sh
 
 DEVSPACE_USER="${DEVSPACE_USER:-devspace}"
 DEVSPACE_VERSION="${DEVSPACE_VERSION:-1.0.8}"
 DEVSPACE_PORT="${DEVSPACE_PORT:-7676}"
 NODE_MAJOR="${NODE_MAJOR:-24}"
 PUBLIC_URL="${PUBLIC_URL:-}"
-CF_TUNNEL_TOKEN="${CF_TUNNEL_TOKEN:-}"
 ALLOWED_ROOTS="${ALLOWED_ROOTS:-}"
 
 log() { printf '\033[1;34m[devspace-setup]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warning]\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
 
-[[ "${EUID}" -eq 0 ]] || die "Run as root, e.g. curl ... | sudo bash"
+[[ "${EUID}" -eq 0 ]] || die "Run as root."
 command -v systemctl >/dev/null 2>&1 || die "systemd is required."
 
 if [[ -z "${PUBLIC_URL}" ]]; then
   [[ -r /dev/tty ]] || die "No TTY. Set PUBLIC_URL=https://your-mcp-host.example.com"
-  read -r -p "DevSpace public HTTPS URL (without /mcp): " PUBLIC_URL </dev/tty
+  read -r -p "Existing public HTTPS URL for DevSpace (without /mcp): " PUBLIC_URL </dev/tty
 fi
 
 PUBLIC_URL="${PUBLIC_URL%/}"
 PUBLIC_URL="${PUBLIC_URL%/mcp}"
 [[ "${PUBLIC_URL}" == https://* ]] || die "PUBLIC_URL must start with https://"
-
-if [[ -z "${CF_TUNNEL_TOKEN}" ]]; then
-  [[ -r /dev/tty ]] || die "No TTY. Set CF_TUNNEL_TOKEN."
-  read -r -s -p "Cloudflare Tunnel token: " CF_TUNNEL_TOKEN </dev/tty
-  printf '\n' >/dev/tty
-fi
-[[ -n "${CF_TUNNEL_TOKEN}" ]] || die "Cloudflare Tunnel token cannot be empty."
 
 DEVSPACE_HOME="/home/${DEVSPACE_USER}"
 DEFAULT_ROOT="${DEVSPACE_HOME}"
@@ -59,10 +51,10 @@ install_base_packages() {
     log "Installing base packages with apt..."
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    apt-get install -y ca-certificates curl git openssl sudo tar xz-utils
+    apt-get install -y ca-certificates curl git openssl tar xz-utils
   elif command -v dnf >/dev/null 2>&1; then
     log "Installing base packages with dnf..."
-    dnf install -y ca-certificates curl git openssl sudo tar xz
+    dnf install -y ca-certificates curl git openssl tar xz
   else
     die "Unsupported distribution: apt-get or dnf is required."
   fi
@@ -91,7 +83,7 @@ install_node() {
     *) die "Unsupported CPU architecture for Node.js: ${machine}" ;;
   esac
 
-  log "Installing current Node.js ${NODE_MAJOR}.x binary from nodejs.org..."
+  log "Installing Node.js ${NODE_MAJOR}.x from nodejs.org..."
   sums="$(curl -fsSL "https://nodejs.org/dist/latest-v${NODE_MAJOR}.x/SHASUMS256.txt")"
   archive="$(printf '%s\n' "${sums}" | awk -v s="linux-${node_arch}.tar.xz" 'index($2,s) && length($2)>=length(s) && substr($2,length($2)-length(s)+1)==s {print $2; exit}')"
   [[ -n "${archive}" ]] || die "Unable to resolve Node.js archive."
@@ -121,25 +113,8 @@ install_node() {
 
 install_devspace() {
   log "Installing DevSpace @waishnav/devspace@${DEVSPACE_VERSION}..."
-  npm install -g --prefix /usr/local "@waishnav/devspace@${DEVSPACE_VERSION}"
+  /usr/local/bin/npm install -g --prefix /usr/local "@waishnav/devspace@${DEVSPACE_VERSION}"
   /usr/local/bin/devspace --version
-}
-
-install_cloudflared() {
-  local machine cf_arch tmp
-  machine="$(uname -m)"
-  case "${machine}" in
-    x86_64|amd64) cf_arch="amd64" ;;
-    aarch64|arm64) cf_arch="arm64" ;;
-    *) die "Unsupported CPU architecture for cloudflared: ${machine}" ;;
-  esac
-
-  log "Installing latest cloudflared..."
-  tmp="$(mktemp)"
-  curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${cf_arch}" -o "${tmp}"
-  install -m 0755 "${tmp}" /usr/local/bin/cloudflared
-  rm -f "${tmp}"
-  /usr/local/bin/cloudflared --version
 }
 
 create_service_user() {
@@ -207,19 +182,8 @@ NODE
   chmod 600 "${DEVSPACE_HOME}/.devspace/config.json" "${DEVSPACE_HOME}/.devspace/auth.json"
 }
 
-write_cloudflare_token() {
-  log "Storing Cloudflare Tunnel token..."
-  install -d -m 0700 -o root -g root /etc/cloudflared
-  umask 077
-  printf '%s' "${CF_TUNNEL_TOKEN}" > /etc/cloudflared/token
-  chown root:root /etc/cloudflared/token
-  chmod 600 /etc/cloudflared/token
-  unset CF_TUNNEL_TOKEN
-}
-
-write_systemd_units() {
-  log "Installing systemd units..."
-
+write_systemd_unit() {
+  log "Installing devspace.service..."
   cat >/etc/systemd/system/devspace.service <<EOF
 [Unit]
 Description=DevSpace MCP Server
@@ -247,62 +211,31 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 EOF
 
-  cat >/etc/systemd/system/cloudflared.service <<'EOF'
-[Unit]
-Description=Cloudflare Tunnel client for DevSpace
-After=network-online.target devspace.service
-Wants=network-online.target
-Requires=devspace.service
-
-[Service]
-Type=notify
-TimeoutStartSec=30
-ExecStart=/usr/local/bin/cloudflared --no-autoupdate tunnel run --token-file /etc/cloudflared/token
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
   systemctl daemon-reload
-  systemctl enable devspace.service cloudflared.service >/dev/null
+  systemctl enable devspace.service >/dev/null
   systemctl restart devspace.service
-  systemctl restart cloudflared.service
 }
 
-verify_services() {
-  log "Checking services..."
+verify_service() {
+  log "Checking DevSpace..."
   sleep 2
   systemctl is-active --quiet devspace.service || {
     systemctl --no-pager -l status devspace.service || true
     die "DevSpace failed to start."
   }
-  systemctl is-active --quiet cloudflared.service || {
-    systemctl --no-pager -l status cloudflared.service || true
-    die "cloudflared failed to start."
-  }
-
-  if ! curl -fsS --max-time 3 "http://127.0.0.1:${DEVSPACE_PORT}/" >/dev/null 2>&1; then
-    # The MCP endpoint may reject a plain GET; a listening socket is enough for this check.
-    if command -v ss >/dev/null 2>&1 && ! ss -ltn | awk '{print $4}' | grep -Eq "[:.]\${DEVSPACE_PORT}$"; then
-      warn "DevSpace service is active but port ${DEVSPACE_PORT} was not detected."
-    fi
-  fi
 }
 
 show_result() {
   local owner_token
   owner_token="$(/usr/local/bin/node -e '
     const fs=require("node:fs");
-    const p=process.argv[1];
-    const a=JSON.parse(fs.readFileSync(p,"utf8"));
+    const a=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
     process.stdout.write(a.ownerToken || "");
   ' "${DEVSPACE_HOME}/.devspace/auth.json")"
 
   printf '\n'
   printf '============================================================\n'
-  printf ' DevSpace + Cloudflare Tunnel installed successfully\n'
+  printf ' DevSpace installed successfully\n'
   printf '============================================================\n'
   printf 'MCP URL:        %s/mcp\n' "${PUBLIC_URL}"
   printf 'Local endpoint: http://127.0.0.1:%s/mcp\n' "${DEVSPACE_PORT}"
@@ -310,25 +243,20 @@ show_result() {
   printf 'Allowed roots:  %s\n' "${ALLOWED_ROOTS}"
   printf 'Owner password: %s\n' "${owner_token}"
   printf '\n'
-  printf 'Cloudflare Dashboard must map %s to http://127.0.0.1:%s\n' "${PUBLIC_URL}" "${DEVSPACE_PORT}"
-  printf 'No inbound Internet port is required on this server.\n'
+  printf 'Existing tunnel/reverse proxy should point to http://127.0.0.1:%s\n' "${DEVSPACE_PORT}"
+  printf 'This installer did NOT install or modify cloudflared.\n'
   printf '\nUseful commands:\n'
-  printf '  systemctl status devspace cloudflared\n'
+  printf '  systemctl status devspace\n'
   printf '  journalctl -u devspace -f\n'
-  printf '  journalctl -u cloudflared -f\n'
-  printf '  sudo -u %s -H /usr/local/bin/devspace doctor\n' "${DEVSPACE_USER}"
+  printf '  /usr/local/bin/devspace --version\n'
   printf '\n'
-  printf 'Important: the Cloudflare hostname itself is Internet-reachable unless you add an access policy.\n'
-  printf 'DevSpace still requires its Owner password approval before an MCP client can use it.\n'
 }
 
 install_base_packages
 install_node
 install_devspace
-install_cloudflared
 create_service_user
 write_devspace_config
-write_cloudflare_token
-write_systemd_units
-verify_services
+write_systemd_unit
+verify_service
 show_result
